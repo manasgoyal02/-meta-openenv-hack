@@ -1,22 +1,14 @@
-<<<<<<< HEAD
 ﻿---
 title: AgriOpsEnv
-description: OpenEnv benchmark for agricultural operations and decision-making
 emoji: "🌾"
 colorFrom: green
 colorTo: yellow
-=======
----
-title: Meta
-emoji: 🌖
-colorFrom: blue
-colorTo: blue
->>>>>>> 75dc890b9383b13f865aeb1ddf032a7b8f9eb21a
 sdk: docker
+sdk_version: "1.0.0"
+app_file: app.py
 pinned: false
 ---
 
-<<<<<<< HEAD
 # AgriOpsEnv
 
 AgriOpsEnv is a deterministic OpenEnv benchmark for agricultural operations and decision-making. It evaluates whether an agent can reason over structured farm context and produce practical, constraint-aware actions.
@@ -65,26 +57,26 @@ OpenEnv interface is preserved:
 
 ```text
 .
-├── models.py
-├── client.py
-├── inference.py
-├── openenv.yaml
-├── pyproject.toml
-├── requirements.txt
-├── server/
-│   ├── app.py
-│   ├── environment.py
-│   └── Dockerfile
-└── agriops_env/
-    ├── models.py
-    ├── client.py
-    ├── openenv.yaml
-    ├── pyproject.toml
-    ├── requirements.txt
-    └── server/
-        ├── app.py
-        ├── environment.py
-        └── Dockerfile
+|-- models.py
+|-- client.py
+|-- inference.py
+|-- openenv.yaml
+|-- pyproject.toml
+|-- requirements.txt
+|-- server/
+|   |-- app.py
+|   |-- environment.py
+|   `-- Dockerfile
+`-- agriops_env/
+    |-- models.py
+    |-- client.py
+    |-- openenv.yaml
+    |-- pyproject.toml
+    |-- requirements.txt
+    `-- server/
+        |-- app.py
+        |-- environment.py
+        `-- Dockerfile
 ```
 
 The duplicated layout is intentionally kept for OpenEnv/hackathon compatibility.
@@ -142,6 +134,3 @@ Use your usual validator flow. The implementation keeps OpenEnv-compatible reset
 
 - Default baseline mode is deterministic heuristic policy for stable benchmark scores.
 - Set `USE_LLM_POLICY=1` to allow LLM output to override matching action stages.
-=======
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
->>>>>>> 75dc890b9383b13f865aeb1ddf032a7b8f9eb21a
