@@ -16,8 +16,9 @@ from client import AgriOpsEnv  # noqa: E402
 from models import AgriOpsAction  # noqa: E402
 
 IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+# Multi-mode validators require requests through the injected LiteLLM proxy.
+API_KEY = os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 TASK_NAME = os.getenv("AGRIOPS_TASK", "easy")
 BENCHMARK = "agriops_env"
@@ -25,7 +26,8 @@ MAX_STEPS = 7
 TEMPERATURE = 0.2
 MAX_TOKENS = 700
 SUCCESS_SCORE_THRESHOLD = 0.55
-USE_LLM_POLICY = os.getenv("USE_LLM_POLICY", "0") == "1"
+# Default to enabled so at least one proxy LLM call is made unless explicitly disabled.
+USE_LLM_POLICY = os.getenv("USE_LLM_POLICY", "1") == "1"
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -264,7 +266,13 @@ async def run_episode(task: str) -> None:
     log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if API_KEY else None
+        llm = None
+        if USE_LLM_POLICY:
+            if not API_BASE_URL or not API_KEY:
+                raise RuntimeError(
+                    "Missing required proxy env vars: API_BASE_URL and API_KEY"
+                )
+            llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
         sys_prompt = SYSTEM_PROMPTS.get(task, SYSTEM_PROMPTS["easy"])
 
         if IMAGE_NAME:
@@ -287,7 +295,14 @@ async def run_episode(task: str) -> None:
             action = heuristic_action(task, step, current_input)
             err_msg = None
 
-            # Optional LLM action only when explicitly enabled.`r`n            if USE_LLM_POLICY and llm is not None:`r`n                raw = get_llm_action(llm, sys_prompt, history, obs_message)`r`n                llm_action = parse_action(raw)`r`n                if llm_action is not None and llm_action.action_type == action.action_type:`r`n                    action = llm_action`r`n                elif llm_action is None:`r`n                    err_msg = f"parse_error:{raw[:60]!r}"
+            # Optional LLM action. Enabled by default to exercise proxy path.
+            if USE_LLM_POLICY and llm is not None:
+                raw = get_llm_action(llm, sys_prompt, history, obs_message)
+                llm_action = parse_action(raw)
+                if llm_action is not None and llm_action.action_type == action.action_type:
+                    action = llm_action
+                elif llm_action is None:
+                    err_msg = f"parse_error:{raw[:60]!r}"
 
             action_str = json.dumps(action.model_dump(exclude_none=True))
 
