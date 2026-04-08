@@ -123,7 +123,7 @@ python inference.py
 ## Docker
 
 ```bash
-docker build -t agriops-env -f server/Dockerfile .
+docker build -t agriops-env -f Dockerfile .
 docker run -p 8000:7860 agriops-env
 ```
 
