@@ -6,7 +6,7 @@ colorTo: yellow
 sdk: docker
 sdk_version: "1.0.0"
 app_port: 7860
-app_file: app.py
+app_file: server/app.py
 pinned: false
 ---
 
