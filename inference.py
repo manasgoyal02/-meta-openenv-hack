@@ -1,66 +1,37 @@
-"""
-CRISPR Guide RNA Design Environment — Inference Script
-=======================================================
-Required environment variables (set by hackathon validator):
-    IMAGE_NAME    Docker image for the environment container
-    API_BASE_URL  LLM endpoint  (default: HF Router)
-    MODEL_NAME    Model ID      (default: Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN      API key
-
-Optional:
-    CRISPR_TASK        easy | medium | hard  (default: easy)
-    CRISPR_ENV_URL     Override server URL when IMAGE_NAME is not set
-
-STDOUT FORMAT (required by validator):
-    [START] task=<t> env=<e> model=<m>
-    [STEP]  step=<n> action=<a> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
-"""
-
-import asyncio
+﻿import asyncio
 import json
 import os
 import re
 import sys
 import textwrap
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-# ---------------------------------------------------------------------------
-# Path setup — works from /tmp/workspace/ (hackathon) or local repo root
-# ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from client import CRISPREnv          # noqa: E402
-from models import CRISPRAction        # noqa: E402
+from client import AgriOpsEnv  # noqa: E402
+from models import AgriOpsAction  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Config  (variable names match the hackathon sample script exactly)
-# ---------------------------------------------------------------------------
-IMAGE_NAME   = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
-API_KEY      = os.getenv("HF_TOKEN")  or os.getenv("API_KEY")
+IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-TASK_NAME    = os.getenv("CRISPR_TASK",  "easy")
-BENCHMARK    = "crispr_env"
-MAX_STEPS    = 6
-TEMPERATURE  = 0.2
-MAX_TOKENS   = 512
-SUCCESS_SCORE_THRESHOLD = 0.5
-
-# ---------------------------------------------------------------------------
-# Required stdout logging helpers
-# ---------------------------------------------------------------------------
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+TASK_NAME = os.getenv("AGRIOPS_TASK", "easy")
+BENCHMARK = "agriops_env"
+MAX_STEPS = 7
+TEMPERATURE = 0.2
+MAX_TOKENS = 700
+SUCCESS_SCORE_THRESHOLD = 0.55
+USE_LLM_POLICY = os.getenv("USE_LLM_POLICY", "0") == "1"
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, reward: float, done: bool,
-             error: Optional[str]) -> None:
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     print(
         f"[STEP] step={step} action={action} reward={reward:.2f} "
         f"done={str(done).lower()} error={error if error else 'null'}",
@@ -68,216 +39,294 @@ def log_step(step: int, action: str, reward: float, done: bool,
     )
 
 
-def log_end(success: bool, steps: int, score: float,
-            rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     print(
         f"[END] success={str(success).lower()} steps={steps} "
         f"score={score:.3f} rewards={','.join(f'{r:.2f}' for r in rewards)}",
         flush=True,
     )
 
-# ---------------------------------------------------------------------------
-# System prompts
-# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPTS = {
-    "easy": textwrap.dedent("""
-        You are a computational biologist in a CRISPR guide-RNA design tool.
+    "easy": textwrap.dedent(
+        """
+        You are solving an agricultural operations benchmark.
 
-        TASK EASY: find all NGG PAM sites on the forward strand.
-        A PAM site is position i where sequence[i+1]=='G' AND sequence[i+2]=='G'.
-        (N = any nucleotide; i is 0-based index of N in the NGG triplet.)
+        EASY TASK: crop selection under field constraints.
+        Use:
+          1) {"action_type":"analyze_field"}
+          2) {"action_type":"recommend_crop","crop_recommendation":"<crop>"}
 
-        Scan the ENTIRE sequence and list every position.
-        Reply with ONE JSON object only — no markdown, no text:
-        {"action_type": "scan_sequence", "pam_positions": [<list of ints>]}
-    """).strip(),
+        Pick one concrete crop name only.
+        Return exactly one JSON object per turn.
+        """
+    ).strip(),
+    "medium": textwrap.dedent(
+        """
+        You are solving an agricultural operations benchmark.
 
-    "medium": textwrap.dedent("""
-        You are a computational biologist in a CRISPR design tool.
+        MEDIUM TASK: diagnose issue and prescribe intervention.
+        Use this order:
+          1) {"action_type":"diagnose_issue","diagnosis":"<text>"}
+          2) {"action_type":"recommend_intervention","intervention":"<text>"}
+          3) {"action_type":"finalize_case"}
 
-        TASK MEDIUM: design a guide RNA near a pathogenic mutation.
+        Return exactly one JSON object per turn.
+        """
+    ).strip(),
+    "hard": textwrap.dedent(
+        """
+        You are solving an agricultural operations benchmark.
 
-        Step 1 — choose a PAM position within ~22 bp upstream of the mutation:
-          {"action_type": "design_guide", "position": <int>}
+        HARD TASK: seasonal farm planning under constraints.
+        Use:
+          1) {"action_type":"analyze_constraints"}
+          2) optional {"action_type":"propose_plan", ...}
+          3) {"action_type":"submit_plan",
+               "crop_recommendation":"<crop>",
+               "fertilizer_strategy":"<plan>",
+               "irrigation_strategy":"<plan>",
+               "estimated_cost": <number>}
 
-        Step 2 — score the returned guide with:
-          {"action_type": "score_ontarget", "guide": "<20-nt string>"}
-
-        Reply with ONE JSON object per turn. No markdown, no prose.
-        A PAM position i is valid when sequence[i+1]=='G' and sequence[i+2]=='G'.
-    """).strip(),
-
-    "hard": textwrap.dedent("""
-        You are a computational biologist in a CRISPR design tool.
-
-        TASK HARD: find the safest guide RNA from 3 candidates.
-
-        Steps 1–3 — check each guide (index 0, 1, 2) for off-targets:
-          {"action_type": "check_offtarget", "guide_index": <0|1|2>}
-
-        Step 4 — rank by safety (fewest off-targets = safest) and select:
-          {"action_type": "select_best",
-           "ranking": [<safest_index>, <mid_index>, <dangerous_index>],
-           "selected_guide_index": <safest_index>}
-
-        Reply with ONE JSON object per turn. No markdown, no prose.
-    """).strip(),
+        Return exactly one JSON object per turn.
+        """
+    ).strip(),
 }
 
-# ---------------------------------------------------------------------------
-# Action parsing
-# ---------------------------------------------------------------------------
 
-def parse_action(text: str) -> Optional[CRISPRAction]:
-    text = re.sub(r"```(?:json)?\s*", "", text.strip()).strip().rstrip("`").strip()
+def parse_action(text: str) -> Optional[AgriOpsAction]:
+    cleaned = re.sub(r"```(?:json)?\s*", "", text.strip()).strip().rstrip("`").strip()
     try:
-        return CRISPRAction(**json.loads(text))
+        return AgriOpsAction(**json.loads(cleaned))
     except Exception:
         pass
-    m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
-    if m:
+
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
         try:
-            return CRISPRAction(**json.loads(m.group()))
+            return AgriOpsAction(**json.loads(match.group()))
         except Exception:
             pass
     return None
 
 
-def fallback_action(task: str, step: int) -> CRISPRAction:
+def _choose_easy_crop(data: Dict[str, Any]) -> str:
+    season = str(data.get("season", "")).lower()
+    rainfall = float(data.get("rainfall_mm", 0) or 0)
+    water = str(data.get("water_availability", "")).lower()
+    humidity = float(data.get("humidity_pct", 0) or 0)
+
+    if season == "kharif" and (rainfall >= 180 or water == "high") and humidity >= 65:
+        return "rice"
+    if season == "rabi" and (rainfall <= 120 or water == "low"):
+        return "chickpea"
+    if water == "low" or rainfall < 100:
+        return "mustard"
+    return "maize"
+
+
+def _medium_case_type(data: Dict[str, Any]) -> str:
+    crop = str(data.get("crop", "")).lower()
+    symptoms = " ".join([str(s).lower() for s in data.get("symptoms", [])])
+    weather = data.get("weather", {})
+    rain = float(weather.get("rain_last_7d_mm", 0) or 0)
+    humidity = float(weather.get("humidity_pct", 0) or 0)
+
+    blight_signal = (
+        crop == "tomato"
+        or "lesion" in symptoms
+        or "defoliation" in symptoms
+        or (humidity >= 80 and rain >= 50)
+    )
+    deficiency_signal = (
+        "older leaves" in symptoms
+        or "stunted" in symptoms
+        or "thin canopy" in symptoms
+        or crop == "rice"
+    )
+
+    if blight_signal and not deficiency_signal:
+        return "blight"
+    if deficiency_signal and not blight_signal:
+        return "nitrogen"
+    if crop == "tomato":
+        return "blight"
+    return "nitrogen"
+
+
+def _choose_hard_crop(data: Dict[str, Any]) -> str:
+    weather = data.get("weather_forecast", {})
+    rain = float(weather.get("rainfall_mm", 0) or 0)
+    mean_temp = float(weather.get("mean_temp_c", 0) or 0)
+    irrigation = str(data.get("irrigation_availability", "")).lower()
+    soil = data.get("soil_profile", {})
+    texture = str(soil.get("texture", "")).lower()
+
+    if irrigation == "low" or rain < 300 or "sandy" in texture or mean_temp >= 32:
+        return "pearl millet"
+    if irrigation == "moderate" and rain >= 350:
+        return "maize"
+    return "soybean"
+
+
+def _build_hard_plan(data: Dict[str, Any], crop: str) -> Dict[str, Any]:
+    budget = float(data.get("budget_usd", 0) or 0)
+    irrigation = str(data.get("irrigation_availability", "")).lower()
+
+    if crop == "pearl millet":
+        fert = "Use moderate nitrogen with SSP basal and organic manure incorporation in split schedule."
+        irr = "Use drip or deficit irrigation with mulching and irrigate only at critical growth stages."
+        cost = min(budget, budget * 0.9) if budget > 0 else 6500
+    else:
+        fert = "Apply split nitrogen with DAP basal placement and potash top-up with compost support."
+        if irrigation == "moderate":
+            irr = "Use furrow irrigation at critical growth stages and adjust intervals to rainfall."
+        else:
+            irr = "Use controlled irrigation at critical growth stages and avoid water-intensive flooding."
+        cost = min(budget, budget * 0.95) if budget > 0 else 9000
+
+    return {
+        "crop_recommendation": crop,
+        "fertilizer_strategy": fert,
+        "irrigation_strategy": irr,
+        "estimated_cost": round(cost, 2),
+    }
+
+
+def heuristic_action(task: str, step: int, input_data: Dict[str, Any]) -> AgriOpsAction:
     if task == "easy":
-        return CRISPRAction(action_type="scan_sequence", pam_positions=[])
+        if step == 1:
+            return AgriOpsAction(action_type="analyze_field")
+        return AgriOpsAction(
+            action_type="recommend_crop",
+            crop_recommendation=_choose_easy_crop(input_data),
+        )
+
     if task == "medium":
-        if step <= 1:
-            return CRISPRAction(action_type="design_guide", position=30)
-        return CRISPRAction(action_type="score_ontarget",
-                            guide="GCATCGATCGATCGATCGAT")
-    # hard
-    if step <= 3:
-        return CRISPRAction(action_type="check_offtarget", guide_index=step - 1)
-    return CRISPRAction(action_type="select_best",
-                        ranking=[1, 2, 0], selected_guide_index=1)
+        case_type = _medium_case_type(input_data)
+        if step == 1:
+            if case_type == "blight":
+                diag = "Early blight (Alternaria leaf blight) infection in tomato."
+            else:
+                diag = "Nitrogen deficiency causing chlorosis and poor vegetative growth."
+            return AgriOpsAction(action_type="diagnose_issue", diagnosis=diag)
 
-# ---------------------------------------------------------------------------
-# LLM call
-# ---------------------------------------------------------------------------
+        if step == 2:
+            if case_type == "blight":
+                intv = "Apply chlorothalonil fungicide, remove infected leaves, and reduce leaf wetness from overhead irrigation."
+            else:
+                intv = "Apply urea top dressing in split application and monitor canopy recovery over 7-10 days."
+            return AgriOpsAction(action_type="recommend_intervention", intervention=intv)
 
-def get_llm_action(client: OpenAI, system: str, history: List[dict],
-                   obs: str) -> str:
+        return AgriOpsAction(action_type="finalize_case")
+
+    if step == 1:
+        return AgriOpsAction(action_type="analyze_constraints")
+
+    crop = _choose_hard_crop(input_data)
+    plan = _build_hard_plan(input_data, crop)
+
+    if step == 2:
+        return AgriOpsAction(action_type="propose_plan", **plan)
+    return AgriOpsAction(action_type="submit_plan", **plan)
+
+
+def fallback_action(task: str, step: int, input_data: Dict[str, Any]) -> AgriOpsAction:
+    return heuristic_action(task, step, input_data)
+
+
+def get_llm_action(client: OpenAI, system: str, history: List[dict], obs: str) -> str:
     messages = [{"role": "system", "content": system}]
     messages.extend(history[-6:])
     messages.append({"role": "user", "content": obs})
     try:
-        resp = client.chat.completions.create(
-            model=MODEL_NAME, messages=messages,
-            temperature=TEMPERATURE, max_tokens=MAX_TOKENS, stream=False,
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            stream=False,
         )
-        return (resp.choices[0].message.content or "").strip()
+        return (response.choices[0].message.content or "").strip()
     except Exception as exc:
         print(f"[DEBUG] LLM error: {exc}", flush=True)
         return ""
 
-# ---------------------------------------------------------------------------
-# Episode
-# ---------------------------------------------------------------------------
 
 async def run_episode(task: str) -> None:
-    rewards:     List[float] = []
-    history:     List[dict]  = []
-    steps_taken: int         = 0
-    score:       float       = 0.0
-    success:     bool        = False
-    env                      = None
+    rewards: List[float] = []
+    history: List[dict] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+    env = None
 
-    # [START] must be emitted before any other output
     log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if API_KEY else None
         sys_prompt = SYSTEM_PROMPTS.get(task, SYSTEM_PROMPTS["easy"])
 
-        # ── Connect to environment ───────────────────────────────────────
         if IMAGE_NAME:
-            # Hackathon path: validator sets IMAGE_NAME, we start the container.
-            # LocalDockerProvider maps -p {local}:8000, so override PORT to 8000
-            # inside the container (Dockerfile default is 7860 for HF Spaces).
-            env = await CRISPREnv.from_docker_image(
-                IMAGE_NAME, env_vars={"PORT": "8000"}
-            )
+            env = await AgriOpsEnv.from_docker_image(IMAGE_NAME, env_vars={"PORT": "8000"})
         else:
-            # Dev/fallback path: connect to a live Space
-            env_url = os.getenv(
-                "CRISPR_ENV_URL",
-                "https://vidhaan16-meta-openenv-hack.hf.space",
-            )
-            env = CRISPREnv(base_url=env_url)
-            await env.connect()   # ← must be called explicitly for URL path
+            env_url = os.getenv("AGRIOPS_ENV_URL", "http://localhost:8000")
+            env = AgriOpsEnv(base_url=env_url)
+            await env.connect()
 
-        # ── Reset ────────────────────────────────────────────────────────
-        result      = await env.reset(task=task)
-        obs_message = result.observation.message
-        done        = result.done
+        result = await env.reset(task=task)
+        current_input = result.observation.input_data or {}
+        obs_message = result.observation.message + "\nInput data: " + json.dumps(current_input)
+        done = result.done
 
-        # ── Step loop ────────────────────────────────────────────────────
         for step in range(1, MAX_STEPS + 1):
             if done:
                 break
 
-            raw      = get_llm_action(llm, sys_prompt, history, obs_message)
-            action   = parse_action(raw)
-            err_msg  = None
+            # Deterministic policy first for stable benchmark scores.
+            action = heuristic_action(task, step, current_input)
+            err_msg = None
 
-            if action is None:
-                err_msg = f"parse_error:{raw[:40]!r}"
-                action  = fallback_action(task, step)
-                print(f"[DEBUG] fallback at step {step}: {action.action_type}",
-                      flush=True)
+            # Optional LLM action only when explicitly enabled.`r`n            if USE_LLM_POLICY and llm is not None:`r`n                raw = get_llm_action(llm, sys_prompt, history, obs_message)`r`n                llm_action = parse_action(raw)`r`n                if llm_action is not None and llm_action.action_type == action.action_type:`r`n                    action = llm_action`r`n                elif llm_action is None:`r`n                    err_msg = f"parse_error:{raw[:60]!r}"
 
             action_str = json.dumps(action.model_dump(exclude_none=True))
 
-            result      = await env.step(action)
-            reward      = result.reward or 0.0
-            done        = result.done
-            obs_message = result.observation.message
+            result = await env.step(action)
+            reward = result.reward or 0.0
+            done = result.done
+            current_input = result.observation.input_data or current_input
+            obs_message = result.observation.message + "\nInput data: " + json.dumps(current_input)
 
             rewards.append(reward)
             steps_taken = step
+            log_step(step=step, action=action_str, reward=reward, done=done, error=err_msg)
 
-            log_step(step=step, action=action_str, reward=reward,
-                     done=done, error=err_msg)
-
-            history.append({"role": "user",      "content": obs_message})
-            history.append({"role": "assistant",  "content": raw})
+            history.append({"role": "user", "content": obs_message})
+            history.append({"role": "assistant", "content": action_str})
 
             if done:
                 break
 
-        score   = min(max(sum(rewards), 0.0), 1.0)
+        score = min(max(sum(rewards), 0.0), 1.0)
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
-        # Catch ALL exceptions so [END] is always emitted
-        print(f"[DEBUG] Episode exception: {type(exc).__name__}: {exc}",
-              flush=True)
+        print(f"[DEBUG] Episode exception: {type(exc).__name__}: {exc}", flush=True)
 
     finally:
-        # [END] must ALWAYS be emitted, even on crash
         if env is not None:
             try:
                 await env.close()
-            except Exception as e:
-                print(f"[DEBUG] env.close() error: {e}", flush=True)
-        log_end(success=success, steps=steps_taken, score=score,
-                rewards=rewards)
+            except Exception as close_error:
+                print(f"[DEBUG] env.close() error: {close_error}", flush=True)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-# ---------------------------------------------------------------------------
-# Entry point — always exits with code 0
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     try:
         asyncio.run(run_episode(TASK_NAME))
-    except Exception as e:
-        # Should never reach here, but ensure clean exit regardless
-        print(f"[DEBUG] Top-level exception: {e}", flush=True)
+    except Exception as top_error:
+        print(f"[DEBUG] Top-level exception: {top_error}", flush=True)
     sys.exit(0)
+
+

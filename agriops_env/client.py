@@ -3,7 +3,7 @@ from typing import Any, Dict
 from openenv.core.client_types import StepResult
 from openenv.core.env_client import EnvClient
 
-from models import AgriOpsAction, AgriOpsObservation, AgriOpsState
+from .models import AgriOpsAction, AgriOpsObservation, AgriOpsState
 
 
 class AgriOpsEnv(EnvClient[AgriOpsAction, AgriOpsObservation, AgriOpsState]):

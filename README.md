@@ -1,154 +1,135 @@
----
-title: CRISPR Guide RNA Design Environment
-emoji: 🧬
-colorFrom: blue
-colorTo: green
+﻿---
+title: AgriOpsEnv
+description: OpenEnv benchmark for agricultural operations and decision-making
+emoji: "🌾"
+colorFrom: green
+colorTo: yellow
 sdk: docker
 pinned: false
 ---
 
-# CRISPR Guide RNA Design Environment
+# AgriOpsEnv
 
-An AI agent benchmark that simulates the workflow of a computational biologist designing CRISPR gene edits — the same process used in real gene therapy research.
-
-> CRISPR won the 2020 Nobel Prize in Chemistry. This environment turns that science into a fully deterministic RL training benchmark.
-
----
+AgriOpsEnv is a deterministic OpenEnv benchmark for agricultural operations and decision-making. It evaluates whether an agent can reason over structured farm context and produce practical, constraint-aware actions.
 
 ## Overview
 
-The agent receives a DNA sequence containing a known pathogenic mutation. It must identify valid cut sites, design a guide RNA, and assess whether the edit is safe — mirroring exactly what biologists do in the lab before a clinical trial.
+The benchmark has 3 tasks with increasing difficulty:
 
-Three tasks of increasing difficulty:
+1. Easy: Crop Selection Under Field Constraints
+- Input: `N`, `P`, `K`, `pH`, `temperature`, `humidity`, `rainfall`, `season`, `water availability`
+- Agent output: `crop_recommendation`
+- Grading: exact crop match with partial credit for accepted alternatives
 
-| Task | What the agent does | Max Score |
-|------|---------------------|-----------|
-| **Easy** | Find all NGG PAM sites (valid cut anchors) in a 90-bp sequence | 1.0 |
-| **Medium** | Design a 20-nt guide RNA near a mutation + score on-target efficiency | 1.0 |
-| **Hard** | Check off-target binding risk for 3 candidate guides, rank them, pick the safest | 1.0 |
+2. Medium: Field Issue Diagnosis and Intervention
+- Input: crop type, soil conditions, visible field symptoms, weather observations
+- Agent output: `diagnosis` and `intervention`
+- Grading: deterministic scoring for diagnosis and intervention quality with unsafe-action penalties
 
-All scoring is **fully deterministic** — PAM sites are rule-based (NGG), efficiency uses Doench Rule Set 2 formulas, off-targets use mismatch counting with seed-region checks. No LLM-as-judge.
+3. Hard: Seasonal Farm Planning Under Constraints
+- Input: soil profile, seasonal weather forecast, irrigation availability, fertilizer availability, farm size, budget
+- Agent output: crop, fertilizer strategy, irrigation strategy, estimated cost
+- Grading: deterministic component scoring for crop suitability, fertilizer suitability, irrigation feasibility, and budget compliance
 
----
+## Reward Design
 
-## Project Structure
+The environment uses dense rewards:
+- rewards useful intermediate actions
+- gives partial credit for partially correct answers
+- penalizes invalid actions, repeated low-value actions, unsafe advice, and infeasible plans
 
-```
-crispr_env/
-├── __init__.py
-├── models.py              # CRISPRAction, CRISPRObservation, CRISPRState (Pydantic)
-├── client.py              # OpenEnv WebSocket client
-├── openenv.yaml           # Submission manifest
+All scoring is deterministic and reproducible.
+
+## Environment API
+
+Typed Pydantic models are preserved:
+- `AgriOpsAction`
+- `AgriOpsObservation`
+- `AgriOpsState`
+
+OpenEnv interface is preserved:
+- `reset(task=...)`
+- `step(action)`
+- `state`
+
+## Project Layout
+
+```text
+.
+├── models.py
+├── client.py
+├── inference.py
+├── openenv.yaml
 ├── pyproject.toml
 ├── requirements.txt
-└── server/
-    ├── environment.py     # All task logic + scoring functions
-    ├── app.py             # FastAPI server (one line)
-    └── Dockerfile
-inference.py               # LLM agent script (OpenAI-compatible)
+├── server/
+│   ├── app.py
+│   ├── environment.py
+│   └── Dockerfile
+└── agriops_env/
+    ├── models.py
+    ├── client.py
+    ├── openenv.yaml
+    ├── pyproject.toml
+    ├── requirements.txt
+    └── server/
+        ├── app.py
+        ├── environment.py
+        └── Dockerfile
 ```
 
----
+The duplicated layout is intentionally kept for OpenEnv/hackathon compatibility.
 
-## Available Actions
+## Local Run
 
-```
-scan_sequence(pam_positions)      →  submit found NGG PAM sites
-design_guide(position)            →  get 20-nt guide RNA at a PAM position
-score_ontarget(guide)             →  Doench RS2 efficiency score [0–1]
-check_offtarget(guide_index)      →  off-target hit count in genome excerpt
-select_best(ranking, selected)    →  final safety ranking + recommendation
-```
-
----
-
-## Reward Structure
-
-### Easy — PAM Scanning
-```
-reward = correct_found / total_true_pams   (recall, max 1.0)
-```
-
-### Medium — Guide Design
-```
-reward = 0.4 (valid guide near mutation) + 0.6 × efficiency_score
-```
-
-### Hard — Safety Assessment
-```
-reward = 0.3 (all 3 guides checked)
-       + 0.4 (correct safety ranking)
-       + 0.3 (correct guide selected)
-```
-
----
-
-## Running Locally
+### 1) Install dependencies
 
 ```bash
-# Install dependencies
-pip install openenv-core fastapi uvicorn pydantic
+pip install -r requirements.txt
+```
 
-# Start the environment server
-uvicorn crispr_env.server.app:app --host 0.0.0.0 --port 8000 --reload
+### 2) Start environment server
 
-# Run the agent (in a separate terminal)
-export HF_TOKEN=your_huggingface_token
+```bash
+python -m uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+### 3) Run baseline agent
+
+Linux/macOS:
+
+```bash
+export HF_TOKEN=your_token
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
-export CRISPR_TASK=easy          # easy | medium | hard
-export CRISPR_ENV_URL=http://localhost:8000
-
+export AGRIOPS_TASK=easy
+export AGRIOPS_ENV_URL=http://localhost:8000
 python inference.py
 ```
 
----
+Windows PowerShell:
 
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `HF_TOKEN` | Yes | Hugging Face API token |
-| `API_BASE_URL` | Yes | LLM endpoint (default: HF Router) |
-| `MODEL_NAME` | Yes | Model identifier |
-| `CRISPR_TASK` | No | Task to run: `easy`, `medium`, `hard` (default: `easy`) |
-| `CRISPR_ENV_URL` | No | Environment server URL (default: `http://localhost:8000`) |
-| `LOCAL_IMAGE_NAME` | No | Docker image name if using `from_docker_image()` |
-
----
+```powershell
+$env:HF_TOKEN="your_token"
+$env:API_BASE_URL="https://router.huggingface.co/v1"
+$env:MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+$env:AGRIOPS_TASK="easy"
+$env:AGRIOPS_ENV_URL="http://localhost:8000"
+python inference.py
+```
 
 ## Docker
 
 ```bash
-# Build
-docker build -t crispr-guide-env -f crispr_env/server/Dockerfile .
-
-# Run
-docker run -p 8000:8000 crispr-guide-env
+docker build -t agriops-env -f server/Dockerfile .
+docker run -p 8000:7860 agriops-env
 ```
 
----
+## OpenEnv Validation
 
-## Biology Background
+Use your usual validator flow. The implementation keeps OpenEnv-compatible reset/step/state behavior and deterministic scoring.
 
-| Term | Meaning |
-|------|---------|
-| **PAM site** | NGG motif where Cas9 anchors before cutting |
-| **Guide RNA (gRNA)** | 20-nt sequence that directs Cas9 to the target |
-| **On-target efficiency** | How reliably the guide cuts at the intended site |
-| **Off-target binding** | Accidental cuts at similar sequences elsewhere in the genome |
-| **Doench Rule Set 2** | Published scoring model for gRNA efficiency (Nature Biotech 2016) |
+## Notes
 
----
-
-## References
-
-- Doench et al. (2016) *Optimized sgRNA design to maximize activity and minimize off-target effects of CRISPR-Cas9*. Nature Biotechnology.
-- Hsu et al. (2013) *DNA targeting specificity of RNA-guided Cas9 nucleases*. Nature Biotechnology.
-- [OpenEnv Framework](https://github.com/meta-pytorch/OpenEnv)
-
----
-
-## Author
-
-**Vidhaan Khare** — [github.com/Vidhaankhare16](https://github.com/Vidhaankhare16)
+- Default baseline mode is deterministic heuristic policy for stable benchmark scores.
+- Set `USE_LLM_POLICY=1` to allow LLM output to override matching action stages.

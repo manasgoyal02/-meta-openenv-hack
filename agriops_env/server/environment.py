@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openenv.core.env_server import Environment
 
-from models import AgriOpsAction, AgriOpsObservation, AgriOpsState
+from ..models import AgriOpsAction, AgriOpsObservation, AgriOpsState
 
 
 TASK_BANK: Dict[str, List[Dict[str, Any]]] = {

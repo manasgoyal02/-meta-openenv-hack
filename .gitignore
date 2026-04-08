@@ -1,7 +1,10 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 *.egg-info/
 dist/
 build/
 .env
 *.log
+.pytest_cache/
+agent_*.log
+server_*.log
