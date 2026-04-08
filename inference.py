@@ -20,7 +20,7 @@ IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
 API_KEY = os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-TASK_NAME = os.getenv("AGRIOPS_TASK", "easy")
+TASK_NAME = os.getenv("AGRIOPS_TASK", "all")
 BENCHMARK = "agriops_env"
 MAX_STEPS = 7
 TEMPERATURE = 0.2
@@ -28,6 +28,7 @@ MAX_TOKENS = 700
 SUCCESS_SCORE_THRESHOLD = 0.55
 # Default to enabled so at least one proxy LLM call is made unless explicitly disabled.
 USE_LLM_POLICY = os.getenv("USE_LLM_POLICY", "1") == "1"
+VALID_TASKS = ("easy", "medium", "hard")
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -47,6 +48,19 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
         f"score={score:.3f} rewards={','.join(f'{r:.2f}' for r in rewards)}",
         flush=True,
     )
+
+
+def _strict_open01(value: float, eps: float = 1e-3) -> float:
+    return max(eps, min(1.0 - eps, value))
+
+
+def parse_tasks(task_spec: str) -> List[str]:
+    raw = (task_spec or "all").strip().lower()
+    if raw in ("all", "*"):
+        return list(VALID_TASKS)
+    tasks = [t.strip() for t in raw.split(",") if t.strip()]
+    selected = [t for t in tasks if t in VALID_TASKS]
+    return selected or ["easy"]
 
 
 SYSTEM_PROMPTS = {
@@ -322,7 +336,7 @@ async def run_episode(task: str) -> None:
             if done:
                 break
 
-        score = min(max(sum(rewards), 0.0), 1.0)
+        score = _strict_open01(min(max(sum(rewards), 0.0), 1.0))
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
@@ -339,7 +353,8 @@ async def run_episode(task: str) -> None:
 
 if __name__ == "__main__":
     try:
-        asyncio.run(run_episode(TASK_NAME))
+        for _task in parse_tasks(TASK_NAME):
+            asyncio.run(run_episode(_task))
     except Exception as top_error:
         print(f"[DEBUG] Top-level exception: {top_error}", flush=True)
     sys.exit(0)
