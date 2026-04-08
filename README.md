@@ -1,3 +1,12 @@
+---
+title: CRISPR Guide RNA Design Environment
+emoji: 🧬
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # CRISPR Guide RNA Design Environment
 
 An AI agent benchmark that simulates the workflow of a computational biologist designing CRISPR gene edits — the same process used in real gene therapy research.
