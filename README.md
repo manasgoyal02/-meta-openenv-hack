@@ -1,4 +1,4 @@
-﻿---
+---
 title: AgriOpsEnv
 emoji: "🌾"
 colorFrom: green
